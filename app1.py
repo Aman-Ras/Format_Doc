@@ -118,6 +118,45 @@ UPLOAD_FORM = '''
             border-radius: 6px; 
             border: 1px solid #fecaca; 
         }
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 255, 255, 0.85);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+    }
+    .loading-box {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        background: #ffffff;
+        padding: 24px 28px;
+        border-radius: 10px;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+        border: 1px solid #e5e7eb;
+    }
+    .spinner {
+        width: 42px;
+        height: 42px;
+        border: 4px solid #3498db;
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+    .loading-text {
+        color: #2c3e50;
+        font-weight: bold;
+        font-size: 14px;
+    }
     </style>
 </head>
 <body>
@@ -135,7 +174,7 @@ UPLOAD_FORM = '''
             {% endif %}
         {% endwith %}
         
-        <form method="POST" enctype="multipart/form-data">
+        <form id="uploadForm" method="POST" enctype="multipart/form-data">
             <div class="upload-section">
                 <h3>Upload Files</h3>
                 
@@ -151,9 +190,86 @@ UPLOAD_FORM = '''
                 </div>
             </div>
             
-            <button type="submit" class="submit-btn">Create Professional Resume</button>
+            <button id="submitBtn" type="submit" class="submit-btn">Create Professional Resume</button>
         </form>
+        
+        <div id="loadingOverlay" class="loading-overlay">
+            <div class="loading-box">
+                <div class="spinner"></div>
+                <div class="loading-text">Formatting your resume...</div>
+            </div>
+        </div>
     </div>
+<script>
+  (function() {
+    var form = document.getElementById('uploadForm');
+    if (!form) return;
+    var overlay = document.getElementById('loadingOverlay');
+    var btn = document.getElementById('submitBtn');
+
+    function showOverlay() {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Generating...';
+      }
+      if (overlay) {
+        overlay.style.display = 'flex';
+      }
+    }
+
+    function hideOverlay() {
+      if (overlay) {
+        overlay.style.display = 'none';
+      }
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Create Professional Resume';
+      }
+    }
+
+    form.addEventListener('submit', function(e) {
+      e.preventDefault();
+      showOverlay();
+
+      var formData = new FormData(form);
+      fetch('/', {
+        method: 'POST',
+        body: formData
+      }).then(function(response) {
+        var disposition = response.headers.get('Content-Disposition') || '';
+        var contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+
+        if (disposition.indexOf('attachment') !== -1 || contentType.indexOf('application/vnd.openxmlformats-officedocument.wordprocessingml.document') !== -1) {
+          var filename = 'formatted_resume.docx';
+          var match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+          if (match) {
+            filename = decodeURIComponent(match[1] || match[2] || filename);
+          }
+          return response.blob().then(function(blob) {
+            var url = window.URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            hideOverlay();
+          });
+        }
+
+        return response.text().then(function(html) {
+          document.open();
+          document.write(html);
+          document.close();
+        });
+      }).catch(function() {
+        hideOverlay();
+        alert('Network error while generating the resume. Please try again.');
+      });
+    });
+  })();
+</script>
 </body>
 </html>
 '''
@@ -237,7 +353,7 @@ class OpenAIResumeExtractor:
             "email": "Email address if found, otherwise empty string",
             "phone": "Phone number if found, otherwise empty string", 
             "date": "Application date if found, otherwise current date in DD-MMM-YYYY format",
-            "subject": "Application subject line or job title applying for",
+            "subject": "Subject line in the exact format 'Application for the Position of {{ROLE}}' (no leading 'Subject:' label)",
             "summary": "Professional summary/objective from Key Expertise section and first paragraph (4-5 lines)",
             "education": [
                 {{"degree": "Degree name", "institution": "Institution name"}}
@@ -256,55 +372,20 @@ class OpenAIResumeExtractor:
             "certifications": ["List of certifications and qualifications"],
             "cover_letter": "Complete cover letter content including all paragraphs after 'Dear Hiring Manager,'. If no cover letter text exists in the resume, GENERATE a professional, concise cover letter tailored to the 'subject' and the candidate's profile, using proper paragraph structure (2-5 paragraphs)."
         }}
-
-        EXAMPLE FORMAT for experience_table (based on the document structure):
-        "experience_table": [
-            {{
-                "company_name": "ITC Infotech as Lead Consultant Windchill Infra & Cloud Support (Oct 2023 - Till Now)",
-                "roles_responsibility": [
-                    "Wind-chill PLM Infra design & Implementation.",
-                    "Wind-chill installation and configuration on VM & Cloud environment.",
-                    "Upgrade of Windchill 10.X, 11.X, 12.X & 13.X.",
-                    "CAD & Office Worker Configuration.",
-                    "SSO Configuration.",
-                    "Rehosting from production to Dev/UAT/PP environment.",
-                    "SSL Configuration, AD integration and Vault configuration.",
-                    "Remote File Server & License Server Configuration.",
-                    "Monitoring of all Windchill environments in AWS.",
-                    "Logs Management of Windchill Server.",
-                    "Server Performance Tuning.",
-                    "Support for Ongoing process & New Integration."
-                ]
-            }},
-            {{
-                "company_name": "NTT Data as Windchill Admin & Cloud Support (May 2012 To Oct 2023)",
-                "roles_responsibility": [
-                    "Project Name: Wind-chill Support Period Sep-2021 - Aug-2023",
-                    "Daily Monitoring of all Windchill environments in AWS.",
-                    "Handling L1 and L2 tickets via ticketing tool.",
-                    "Rehosting from production to Dev/UAT environment.",
-                    "SSL Configuration, AD integration and Vault configuration.",
-                    "Creating Users, Groups, Parts.",
-                    "Creating windows services for Windchill server.",
-                    "Participant's Administration in Windchill (User/Groups Role Creation/Deletion) Maintain the logs of windchill server.",
-                    "Performance Tuning Support for Ongoing process"
-                ]
-            }}
-        ]
-
+        
         CRITICAL RULES:
         1. Extract ONLY information clearly present in the text
         2. For "name": Extract the candidate's full name as shown in the document header
         3. For "location": Extract city/location (e.g., "Bengaluru", "Bangalore")
         4. For "date": Extract application date if found, otherwise use current date
-        5. For "subject": Extract the exact subject line (e.g., "Application for the Position of Wind-chill Infra Lead")
+        5. For "subject": Return exactly "Application for the Position of {{ROLE}}" using the candidate's target role/title; do not include a leading "Subject:" label or extra punctuation
         6. For "summary": Combine Key Expertise section and first paragraph of cover letter
         7. For "education": Extract degree and institution in table format
         8. For "experience_table": Format each entry to match the table structure with "Company Name as Role (Duration)" in company_name field
         9. For "roles_responsibility" field: Extract each responsibility EXACTLY as written by the candidate from the Roles & Responsibility column
         10. For "skills": Extract from Key Skills section as a bulleted list
         11. For "certifications": Extract from CERTIFICATIONS section
-        12. For "cover_letter": If present, extract ALL paragraphs after "Dear Hiring Manager," including the complete professional letter content with proper paragraph structure. If NOT present in the resume, GENERATE a professional cover letter using the candidate's details (summary, key skills, certifications, experience highlights) tailored to the subject, and return it as multi-paragraph text (avoid repeating "Dear Hiring Manager,").
+        12. For "cover_letter": GENERATE a professional cover letter using the candidate's details (summary, key skills, certifications, experience highlights) tailored to the subject, and return it as multi-paragraph text (avoid repeating "Dear Hiring Manager,").
         13. Preserve the original formatting, punctuation, and exact language used by the candidate
         14. Return ONLY valid JSON with proper array formatting
         15. Ensure all JSON syntax is correct with proper quotes and commas
@@ -359,17 +440,17 @@ class OpenAIResumeExtractor:
     def validate_and_clean_data(self, data):
         """Validate and clean extracted data"""
         defaults = {
-            'name': 'Professional Candidate',
-            'location': 'Bengaluru',
+            'name': '',
+            'location': '',
             'email': '',
             'phone': '',
-            'date': datetime.now().strftime("%d-%b-%Y"),
-            'subject': 'Application for Technical Position',
-            'summary': 'Experienced professional seeking opportunities in technology and infrastructure.',
-            'education': [('BCA', 'University Name')],
+            'date': '',
+            'subject': '',
+            'summary': '',
+            'education': [],
             'experience_table': [],
             'experience': [],  # Keep for backward compatibility
-            'skills': ['Linux', 'AWS', 'Cloud Computing', 'System Administration'],
+            'skills': [],
             'certifications': [],
             'cover_letter': ''
         }
@@ -393,116 +474,28 @@ class OpenAIResumeExtractor:
         
         # Clean and limit arrays
         if isinstance(data.get('skills'), list):
-            data['skills'] = [skill.strip() for skill in data['skills'][:15]]
+            data['skills'] = [skill.strip() for skill in data['skills'][:15] if isinstance(skill, str) and skill.strip()]
         
         if isinstance(data.get('certifications'), list):
-            data['certifications'] = [cert.strip() for cert in data['certifications'][:10]]
+            data['certifications'] = [cert.strip() for cert in data['certifications'][:10] if isinstance(cert, str) and cert.strip()]
+
         
-        # Ensure cover letter is present: if missing or empty, generate a professional one
-        if not data.get('cover_letter'):
-            try:
-                data['cover_letter'] = self.generate_cover_letter(data)
-            except Exception:
-                # As a last resort, set a minimal generic letter
-                data['cover_letter'] = (
-                    "I am writing to express my interest in the role mentioned above. "
-                    "With relevant experience and a strong foundation in key technologies, "
-                    "I am confident I can contribute effectively from day one.\n\n"
-                    "Thank you for your time and consideration.\n\n"
-                    "Sincerely,\n"
-                    f"{data.get('name', 'Candidate')}"
-                )
+        # Use LLM-provided cover letter as-is (trim only)
+        if isinstance(data.get('cover_letter'), str):
+            data['cover_letter'] = data['cover_letter'].strip()
+        else:
+            data['cover_letter'] = ''
         
-        # Normalize cover letter closing and remove greeting duplication
-        data['cover_letter'] = self.normalize_cover_letter(
-            data.get('cover_letter', ''), data.get('name', 'Candidate')
-        )
-        
+        # Ensure cover letter ends with desired closing
+        if data['cover_letter']:
+            candidate_name = (data.get('name') or '').strip() or 'Candidate'
+            desired_closing = f"Sincerely,\n{candidate_name}"
+            current = data['cover_letter'].rstrip()
+            if not current.endswith(desired_closing):
+                data['cover_letter'] = current + "\n\n" + desired_closing
+
         return data
 
-    def generate_cover_letter(self, data):
-        """Generate a concise professional cover letter using extracted resume details.
-        This text intentionally omits the greeting since the document template includes it.
-        """
-        candidate_name = data.get('name', 'Professional Candidate')
-        subject_line = data.get('subject', 'Application for Technical Position')
-        summary_text = data.get('summary', '')
-        skills_list = data.get('skills', [])
-        certifications_list = data.get('certifications', [])
-        experiences = data.get('experience_table') or []
-
-        # Derive highlights
-        top_skills = ', '.join(skills_list[:6]) if skills_list else ''
-        certs = ', '.join(certifications_list[:3]) if certifications_list else ''
-        recent_company = ''
-        if experiences and isinstance(experiences, list) and isinstance(experiences[0], dict):
-            recent_company = experiences[0].get('company_name', '')
-
-        # Build paragraphs
-        p1_parts = [
-            f"I am excited to apply for {subject_line}.",
-        ]
-        if summary_text:
-            p1_parts.append(summary_text.strip())
-        p1 = ' '.join(p1_parts)
-
-        p2_lines = []
-        if recent_company:
-            p2_lines.append(f"In my recent experience, I contributed at {recent_company}.")
-        if top_skills:
-            p2_lines.append(f"My core strengths include {top_skills}.")
-        if certs:
-            p2_lines.append(f"I also hold certifications such as {certs}.")
-        if not p2_lines:
-            p2_lines.append("I bring a strong track record of delivering reliable solutions in fast-paced environments.")
-        p2 = ' '.join(p2_lines)
-
-        p3 = (
-            "I am drawn to this opportunity because it aligns with my experience and the impact I aim to deliver. "
-            "I value ownership, collaboration, and continuous improvement, and I am confident I can add value from day one."
-        )
-
-        closing = (
-            "Thank you for your time and consideration. I would welcome the chance to discuss how my background "
-            "can support your team's goals.\n\n"
-            f"Sincerely,\n{candidate_name}"
-        )
-
-        return "\n\n".join([p1, p2, p3, closing]).strip()
-
-    def normalize_cover_letter(self, text, candidate_name):
-        """Normalize cover letter content to enforce closing as 'Sincerely,\n{name}'
-        and remove embedded greeting duplicates. Keeps multi-paragraph structure.
-        """
-        if not isinstance(text, str):
-            text = str(text or '')
-        content = text.strip()
-        # Remove leading greeting if present
-        content = re.sub(r"^\s*dear\s+hiring\s+manager\s*[,\:]?\s*\n?\n?", "", content, flags=re.IGNORECASE)
-        # Split paragraphs
-        paragraphs = [p.strip() for p in re.split(r"\n\n+", content) if p.strip()]
-        # Remove trailing valedictions/sign-offs from the end paragraphs
-        valediction_patterns = [
-            r"^(sincerely|regards|best regards|best|thanks|thank you|yours truly|yours faithfully)\b[\s,]*$",
-            r"^(sincerely|regards|best regards|best|thanks|thank you|yours truly|yours faithfully)\b[\s,]*\n.*$",
-        ]
-        while paragraphs:
-            last = paragraphs[-1]
-            if any(re.match(pat, last, flags=re.IGNORECASE) for pat in valediction_patterns):
-                paragraphs.pop()
-            elif re.match(r"^[A-Za-z .'-]{2,}$", last) and len(paragraphs) >= 1:
-                # Likely a standalone name/signature line at end
-                paragraphs.pop()
-            else:
-                break
-        normalized_body = "\n\n".join(paragraphs).strip()
-        desired_closing = f"Sincerely,\n{candidate_name}".strip()
-        if normalized_body.endswith(desired_closing):
-            return normalized_body
-        if normalized_body:
-            return normalized_body + "\n\n" + desired_closing
-        return desired_closing
-    
     def extract_with_rules(self, resume_text):
         """Enhanced rule-based extraction as fallback"""
         lines = [line.strip() for line in resume_text.split('\n') if line.strip()]
@@ -653,7 +646,7 @@ class ProfessionalResumeFormatter:
         run = para.add_run(text)
         set_calibri_font(run, 11, False, self.black_color)
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        para.space_after = Pt(6)  # Reduced from 12 to 6 points
+        para.space_after = Pt(4)  # Reduced from 12 to 6 points
     
     def add_section_header(self, text, use_blue=False):
         """Add section headers"""
@@ -925,53 +918,55 @@ class ProfessionalResumeFormatter:
         # Add page header that appears on every page
         self.add_page_header_to_all_pages(candidate_info['name'])
         
-        # Objective/Summary
-        self.add_blue_header("Key Expertise")
-        self.add_objective(candidate_info['summary'])
+        # Objective/Summary (only if present)
+        if candidate_info.get('summary'):
+            self.add_blue_header("Key Expertise")
+            self.add_objective(candidate_info['summary'])
         
-        # Education table
-        self.add_blue_header("Education Details")
-        self.add_standard_table(["Qualification", "Institution"], candidate_info['education'])
+        # Education table (only if present)
+        if candidate_info.get('education'):
+            self.add_blue_header("Education Details")
+            self.add_standard_table(["Qualification", "Institution"], candidate_info['education'])
         
         # Contact info - compact spacing
         name_para = self.doc.add_paragraph()
         name_run = name_para.add_run(candidate_info['name'])
         set_calibri_font(name_run, 16, True, self.black_color)
         
-        loc_para = self.doc.add_paragraph()
-        loc_run = loc_para.add_run(candidate_info['location'])
-        set_calibri_font(loc_run, 11, False, self.black_color)
-        loc_para.space_after = Pt(3)  # Minimal spacing after location
+        if candidate_info.get('location'):
+            loc_para = self.doc.add_paragraph()
+            loc_run = loc_para.add_run(candidate_info['location'])
+            set_calibri_font(loc_run, 11, False, self.black_color)
+            loc_para.space_after = Pt(3)  # Minimal spacing after location
         
         # Date and Subject - compact spacing
-        date_para = self.doc.add_paragraph()
-        date_run = date_para.add_run(f"Date: {candidate_info['date']}")
-        set_calibri_font(date_run, 11, False, self.black_color)
-        date_para.space_after = Pt(3)  # Minimal spacing after date
+        if candidate_info.get('date'):
+            date_para = self.doc.add_paragraph()
+            date_run = date_para.add_run(f"Date: {candidate_info['date']}")
+            set_calibri_font(date_run, 11, False, self.black_color)
+            date_para.space_after = Pt(3)  # Minimal spacing after date
         
-        subj_para = self.doc.add_paragraph()
-        subj_run = subj_para.add_run(f"Subject: {candidate_info['subject']}")
-        set_calibri_font(subj_run, 11, True, self.black_color)
-        subj_para.space_after = Pt(3)  # Minimal spacing after subject
+        if candidate_info.get('subject'):
+            subj_para = self.doc.add_paragraph()
+            subj_label = subj_para.add_run("Subject: ")
+            set_calibri_font(subj_label, 11, True, self.black_color)
+            subj_text = subj_para.add_run(str(candidate_info['subject']))
+            set_calibri_font(subj_text, 11, False, self.black_color)
+            subj_para.space_after = Pt(3)  # Minimal spacing after subject
         
-        # Cover letter
-        self.doc.add_paragraph()
-        dear_para = self.doc.add_paragraph()
-        dear_run = dear_para.add_run("Dear Hiring Manager,")
-        set_calibri_font(dear_run, 11, True, self.black_color)  # Made bold
-        
-        # Add cover letter content if available
+        # Cover letter (only if present)
         if candidate_info.get('cover_letter'):
+            dear_para = self.doc.add_paragraph()
+            dear_run = dear_para.add_run("Dear Hiring Manager,")
+            set_calibri_font(dear_run, 11, True, self.black_color)  # Made bold
             # Split cover letter into paragraphs and add each separately
             cover_paragraphs = candidate_info['cover_letter'].split('\n\n')
             for para_text in cover_paragraphs:
-                if para_text.strip():
-                    # Skip if the paragraph contains "Dear Hiring Manager" to avoid duplication
-                    if "Dear Hiring Manager" not in para_text.strip():
-                        cover_para = self.doc.add_paragraph()
-                        cover_run = cover_para.add_run(para_text.strip())
-                        set_calibri_font(cover_run, 11, False, self.black_color)
-                        cover_para.space_after = Pt(3)  # Reduced spacing
+                if para_text.strip() and "Dear Hiring Manager" not in para_text.strip():
+                    cover_para = self.doc.add_paragraph()
+                    cover_run = cover_para.add_run(para_text.strip())
+                    set_calibri_font(cover_run, 11, False, self.black_color)
+                    cover_para.space_after = Pt(3)  # Reduced spacing
         
         # Skills section - Ultra compact spacing like certifications
         if candidate_info.get('skills'):
@@ -979,14 +974,16 @@ class ProfessionalResumeFormatter:
             # Add skills with ultra-compact spacing
             for item in candidate_info['skills']:
                 para = self.doc.add_paragraph()
-                run = para.add_run(f"• {item}")
+                run = para.add_run(f"\t• {item}")
                 set_calibri_font(run, 11, False, self.black_color)
                 # Ultra-compact spacing for skills
                 para.space_after = Pt(0)  # No spacing after
                 para.space_before = Pt(0)  # No spacing before
                 para.paragraph_format.line_spacing = 1.0  # Single line spacing
                 para.paragraph_format.space_after = Pt(0)  # Additional Word-level spacing control
-        
+            # Insert a single blank line after skills list
+            self.doc.add_paragraph()
+ 
         # Experience section
         if candidate_info.get('experience_table'):
             self.add_section_header("Experience:")
@@ -1015,9 +1012,7 @@ class ProfessionalResumeFormatter:
                 ]
                 print(f"Creating table with data: {exp_data}")
                 self.add_table(["", ""], exp_data)  # Empty headers since labels are in left column
-                
-                # Add spacing between experience tables
-                self.doc.add_paragraph()
+                # Spacing after table is already added inside add_table(); avoid extra spacing
         elif candidate_info.get('experience'):  # Fallback for old format
             self.add_section_header("Experience:")
             print(f"Using fallback experience format: {candidate_info['experience']}")
@@ -1037,9 +1032,7 @@ class ProfessionalResumeFormatter:
                     ("Roles & Responsibility", responsibilities_text)
                 ]
                 self.add_table(["", ""], exp_data)  # Empty headers since labels are in left column
-                
-                # Add spacing between experience tables
-                self.doc.add_paragraph()
+                # Spacing after table is already added inside add_table(); avoid extra spacing
         
         # Certifications - ultra compact spacing
         if candidate_info.get('certifications'):
