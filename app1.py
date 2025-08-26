@@ -12,6 +12,10 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT as WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import PyPDF2
+try:
+    from pyngrok import ngrok
+except Exception:
+    ngrok = None
 
 load_dotenv()
 api_key = os.getenv('OPENAI_API_KEY')
@@ -1246,7 +1250,7 @@ if __name__ == '__main__':
             return "127.0.0.1"
     
     local_ip = get_local_ip()
-    port = 5002
+    port = 5005
     
     print("=" * 60)
     print("🌐 RESUME FORMATTER - NETWORK ACCESS")
@@ -1256,5 +1260,22 @@ if __name__ == '__main__':
     print(f"Other users on same network can use: http://{local_ip}:{port}")
     print("=" * 60)
     print("Starting server...")
+
+    # Start ngrok tunnel if pyngrok is installed
+    if ngrok is not None:
+        try:
+            ngrok_authtoken = os.getenv('NGROK_AUTHTOKEN')
+            if ngrok_authtoken:
+                ngrok.set_auth_token(ngrok_authtoken)
+            http_tunnel = ngrok.connect(addr=port, proto="http")
+            public_url = http_tunnel.public_url
+            print("=" * 60)
+            print(f"Public (ngrok) URL: {public_url}")
+            print("Share this URL to access your app over the internet.")
+            print("=" * 60)
+        except Exception as e:
+            print(f"ngrok start failed: {e}")
+    else:
+        print("pyngrok not installed; you can run 'ngrok http {port}' separately to expose the app.")
     
-    app.run(debug=True, host='0.0.0.0', port=port)
+    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
