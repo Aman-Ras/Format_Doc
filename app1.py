@@ -412,7 +412,7 @@ class OpenAIResumeExtractor:
         }
         
         try:
-            response = requests.post(self.api_url, headers=headers, json=data, timeout=30)
+            response = requests.post(self.api_url, headers=headers, json=data, timeout=120)
             response.raise_for_status()
             
             result = response.json()
