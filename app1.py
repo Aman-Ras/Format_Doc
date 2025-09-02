@@ -1084,6 +1084,14 @@ class ResumeTextExtractor:
             text = ""
             for para in doc.paragraphs:
                 text += para.text + "\n"
+                
+            # ✅ NEW: Extract text from tables also
+            for table in doc.tables:
+                for row in table.rows:
+                    row_data = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if row_data:
+                        text += " | ".join(row_data) + "\n"
+                        
             return text
         except Exception as e:
             return f"DOCX Error: {str(e)}"
