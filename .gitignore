@@ -1,0 +1,50 @@
+# ── Secrets ──────────────────────────────────────────────
+.env
+*.env
+.env.*
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# ── Virtual environments ──────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Uploads / generated files ────────────────────────────
+uploads/
+*.pptx
+*.docx
+*.pdf
+*.zip
+
+# ── macOS ────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDE / Editor ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Logs ─────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Distribution / build ─────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ── pytest ───────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

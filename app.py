@@ -4,6 +4,7 @@ import io
 import os
 import re
 import json
+import zipfile
 import requests
 from datetime import datetime
 from docx import Document
@@ -12,6 +13,11 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT as WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 import PyPDF2
+from pptx import Presentation
+from pptx.util import Inches as PptxInches, Pt as PptxPt
+from pptx.dml.color import RGBColor as PptxRGBColor
+from pptx.enum.text import PP_ALIGN, MSO_ANCHOR, MSO_AUTO_SIZE
+from pptx.enum.shapes import MSO_SHAPE
 try:
     from pyngrok import ngrok
 except Exception:
@@ -29,250 +35,423 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 # Clean HTML Template
 UPLOAD_FORM = '''
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>HTML-Based Resume Formatter</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume Formatter — PowerPoint Generator</title>
+    <meta name="description" content="Upload your resume and get a professionally formatted PowerPoint presentation instantly.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            background-color: #f5f5f5; 
-            margin: 0; 
-            padding: 20px; 
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
         }
-        .container { 
-            background: white; 
-            max-width: 600px; 
-            margin: 0 auto; 
-            padding: 40px; 
-            border-radius: 12px; 
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
+
+        .page-wrapper {
+            width: 100%;
+            max-width: 520px;
         }
-        h1 { 
-            text-align: center; 
-            color: #2c3e50; 
-            margin-bottom: 10px; 
-            font-size: 28px; 
-            font-weight: bold; 
+
+        /* ── Brand mark ── */
+        .brand {
+            text-align: center;
+            margin-bottom: 28px;
         }
-        .subtitle { 
-            text-align: center; 
-            color: #7f8c8d; 
-            margin-bottom: 30px; 
-            font-size: 14px; 
+        .brand-icon {
+            width: 52px;
+            height: 52px;
+            background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+            border-radius: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 14px;
+            box-shadow: 0 4px 14px rgba(26,115,232,0.35);
         }
-        .upload-section { 
-            border: 2px dashed #3498db; 
-            padding: 30px; 
-            margin: 25px 0; 
-            background-color: #f8f9fa; 
-            border-radius: 8px; 
+        .brand-icon svg { width: 26px; height: 26px; fill: #fff; }
+        .brand h1 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #111827;
+            letter-spacing: -0.4px;
         }
-        .upload-section h3 { 
-            margin: 0 0 20px 0; 
-            color: #2c3e50; 
-            font-size: 18px; 
+        .brand p {
+            font-size: 13.5px;
+            color: #6b7280;
+            margin-top: 4px;
+            font-weight: 400;
         }
-        .file-input { 
-            margin: 15px 0; 
+
+        /* ── Card ── */
+        .card {
+            background: #ffffff;
+            border-radius: 20px;
+            padding: 36px 36px 32px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 8px 32px rgba(0,0,0,0.08);
+            border: 1px solid rgba(0,0,0,0.05);
         }
-        .file-input label { 
-            display: block; 
-            margin-bottom: 5px; 
-            color: #2c3e50; 
-            font-weight: bold; 
+
+        /* ── Error banner ── */
+        .error-banner {
+            background: #fff5f5;
+            border: 1px solid #fed7d7;
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            color: #c53030;
+            font-size: 13.5px;
+            font-weight: 500;
         }
-        input[type="file"] { 
-            padding: 8px; 
-            border: 1px solid #ddd; 
-            border-radius: 4px; 
-            width: 100%; 
-            box-sizing: border-box; 
+
+        /* ── Upload Zone ── */
+        .upload-zone {
+            border: 2px dashed #d1d5db;
+            border-radius: 14px;
+            padding: 28px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            position: relative;
+            background: #fafafa;
         }
-        .submit-btn { 
-            background: #3498db; 
-            color: white; 
-            padding: 15px 40px; 
-            border: none; 
-            border-radius: 6px; 
-            cursor: pointer; 
-            font-size: 16px; 
-            font-weight: bold; 
-            display: block; 
-            margin: 0 auto; 
-            transition: background-color 0.3s; 
+        .upload-zone:hover, .upload-zone.drag-over {
+            border-color: #1a73e8;
+            background: #f0f6ff;
         }
-        .submit-btn:hover { 
-            background: #2980b9; 
+        .upload-zone input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
         }
-        .file-info { 
-            font-size: 12px; 
-            color: #7f8c8d; 
-            margin-top: 5px; 
+        .upload-icon {
+            width: 44px;
+            height: 44px;
+            background: #e8f0fe;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 12px;
         }
-        .error { 
-            color: #e74c3c; 
-            margin: 15px 0; 
-            padding: 15px; 
-            background: #fdf2f2; 
-            border-radius: 6px; 
-            border: 1px solid #fecaca; 
+        .upload-icon svg { width: 22px; height: 22px; fill: #1a73e8; }
+        .upload-label {
+            font-size: 14px;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 4px;
         }
-    .loading-overlay {
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: rgba(255, 255, 255, 0.85);
-        display: none;
-        align-items: center;
-        justify-content: center;
-        z-index: 9999;
-    }
-    .loading-box {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 12px;
-        background: #ffffff;
-        padding: 24px 28px;
-        border-radius: 10px;
-        box-shadow: 0 6px 18px rgba(0,0,0,0.12);
-        border: 1px solid #e5e7eb;
-    }
-    .spinner {
-        width: 42px;
-        height: 42px;
-        border: 4px solid #3498db;
-        border-top-color: transparent;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-    }
-    @keyframes spin {
-        to { transform: rotate(360deg); }
-    }
-    .loading-text {
-        color: #2c3e50;
-        font-weight: bold;
-        font-size: 14px;
-    }
+        .upload-hint {
+            font-size: 12.5px;
+            color: #9ca3af;
+        }
+        .upload-hint span { color: #1a73e8; font-weight: 500; }
+
+        /* ── File chosen state ── */
+        .file-chosen {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            background: #f0f6ff;
+            border: 1.5px solid #93c5fd;
+            border-radius: 10px;
+            padding: 10px 14px;
+            margin-top: 14px;
+        }
+        .file-chosen.visible { display: flex; }
+        .file-chosen-icon { font-size: 20px; }
+        .file-chosen-name {
+            font-size: 13px;
+            font-weight: 500;
+            color: #1e3a6e;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 1;
+        }
+        .file-chosen-remove {
+            cursor: pointer;
+            color: #6b7280;
+            font-size: 18px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .file-chosen-remove:hover { color: #ef4444; }
+
+        /* ── Supported formats ── */
+        .formats {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+            justify-content: center;
+        }
+        .format-tag {
+            font-size: 11px;
+            font-weight: 500;
+            color: #6b7280;
+            background: #f3f4f6;
+            border-radius: 20px;
+            padding: 3px 10px;
+            letter-spacing: 0.3px;
+        }
+
+        /* ── Divider ── */
+        .divider { height: 1px; background: #f0f0f0; margin: 24px 0; }
+
+        /* ── Submit button ── */
+        .submit-btn {
+            width: 100%;
+            background: linear-gradient(135deg, #1a73e8 0%, #1557b0 100%);
+            color: #fff;
+            border: none;
+            border-radius: 12px;
+            padding: 14px 24px;
+            font-size: 15px;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            cursor: pointer;
+            letter-spacing: 0.2px;
+            transition: transform 0.15s, box-shadow 0.15s, opacity 0.2s;
+            box-shadow: 0 4px 14px rgba(26,115,232,0.35);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .submit-btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(26,115,232,0.45);
+        }
+        .submit-btn:active:not(:disabled) { transform: translateY(0); }
+        .submit-btn:disabled { opacity: 0.65; cursor: not-allowed; transform: none; }
+        .btn-icon { width: 18px; height: 18px; fill: #fff; flex-shrink: 0; }
+
+        /* ── Footer note ── */
+        .footer-note {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #9ca3af;
+        }
+
+        /* ── Loading overlay ── */
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255,255,255,0.88);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .loading-card {
+            background: #fff;
+            border-radius: 20px;
+            padding: 36px 44px;
+            text-align: center;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.12);
+            border: 1px solid #e5e7eb;
+        }
+        .spinner-ring {
+            width: 52px;
+            height: 52px;
+            border: 4px solid #e8f0fe;
+            border-top-color: #1a73e8;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 4px;
+        }
+        .loading-sub {
+            font-size: 12.5px;
+            color: #9ca3af;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>HTML-Based Resume Formatter</h1>
-        <p class="subtitle">Perfect format matching from extracted HTML</p>
-        
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                <div class="error">
-                    {% for message in messages %}
-                        <p><strong>Error:</strong> {{ message }}</p>
-                    {% endfor %}
-                </div>
-            {% endif %}
-        {% endwith %}
-        
-        <form id="uploadForm" method="POST" enctype="multipart/form-data">
-            <div class="upload-section">
-                <h3>Upload Files</h3>
-                
-                <div class="file-input">
-                    <label for="resume_file">Resume:</label>
-                    <input type="file" id="resume_file" name="resume_file" accept=".pdf,.doc,.docx,.txt" required>
-                </div>
-                
-                <div class="file-input">
-                    <label for="logo_file">Logo (Optional):</label>
-                    <input type="file" id="logo_file" name="logo_file" accept=".png,.jpg,.jpeg">
-                    <div class="file-info">Will be named logo.png</div>
-                </div>
+    <div class="page-wrapper">
+        <!-- Brand -->
+        <div class="brand">
+            <div class="brand-icon">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 1.5L18.5 9H13V3.5zM6 20V4h5v7h7v9H6z"/></svg>
             </div>
-            
-            <button id="submitBtn" type="submit" class="submit-btn">Create Professional Resume</button>
-        </form>
-        
-        <div id="loadingOverlay" class="loading-overlay">
-            <div class="loading-box">
-                <div class="spinner"></div>
-                <div class="loading-text">Formatting your resume...</div>
-            </div>
+            <h1>Resume Formatter</h1>
+            <p>Upload your resume — get a polished PowerPoint instantly</p>
+        </div>
+
+        <!-- Card -->
+        <div class="card">
+
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    <div class="error-banner">
+                        {% for message in messages %}⚠ {{ message }}{% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            <form id="uploadForm" method="POST" enctype="multipart/form-data">
+
+                <!-- Upload zone -->
+                <div class="upload-zone" id="uploadZone">
+                    <input type="file" id="resume_file" name="resume_file"
+                           accept=".pdf,.doc,.docx,.txt" required multiple>
+                    <div class="upload-icon">
+                        <svg viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+                    </div>
+                    <p class="upload-label">Drop your resumes here</p>
+                    <p class="upload-hint">or <span>browse to upload</span> · supports multiple files</p>
+                </div>
+
+                <!-- Selected file indicator -->
+                <div class="file-chosen" id="fileChosen">
+                    <span class="file-chosen-icon">📄</span>
+                    <span class="file-chosen-name" id="fileChosenName"></span>
+                    <span class="file-chosen-remove" id="fileRemove" title="Remove">✕</span>
+                </div>
+
+                <!-- Supported formats -->
+                <div class="formats">
+                    <span class="format-tag">PDF</span>
+                    <span class="format-tag">DOCX</span>
+                    <span class="format-tag">DOC</span>
+                    <span class="format-tag">TXT</span>
+                </div>
+
+                <div class="divider"></div>
+
+                <button id="submitBtn" type="submit" class="submit-btn">
+                    <svg class="btn-icon" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                    Generate PowerPoint Resume
+                </button>
+
+            </form>
+        </div>
+
+        <p class="footer-note">Your resume is processed securely and never stored.</p>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-card">
+            <div class="spinner-ring"></div>
+            <p class="loading-title">Generating your resume…</p>
+            <p class="loading-sub">This may take 10–20 seconds</p>
         </div>
     </div>
+
 <script>
-  (function() {
-    var form = document.getElementById('uploadForm');
-    if (!form) return;
-    var overlay = document.getElementById('loadingOverlay');
-    var btn = document.getElementById('submitBtn');
+(function () {
+    var form     = document.getElementById('uploadForm');
+    var input    = document.getElementById('resume_file');
+    var zone     = document.getElementById('uploadZone');
+    var chosen   = document.getElementById('fileChosen');
+    var chosenName = document.getElementById('fileChosenName');
+    var removeBtn  = document.getElementById('fileRemove');
+    var overlay  = document.getElementById('loadingOverlay');
+    var btn      = document.getElementById('submitBtn');
 
-    function showOverlay() {
-      if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Generating...';
-      }
-      if (overlay) {
-        overlay.style.display = 'flex';
-      }
-    }
-
-    function hideOverlay() {
-      if (overlay) {
-        overlay.style.display = 'none';
-      }
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Create Professional Resume';
-      }
-    }
-
-    form.addEventListener('submit', function(e) {
-      e.preventDefault();
-      showOverlay();
-
-      var formData = new FormData(form);
-      fetch('/', {
-        method: 'POST',
-        body: formData
-      }).then(function(response) {
-        var disposition = response.headers.get('Content-Disposition') || '';
-        var contentType = (response.headers.get('Content-Type') || '').toLowerCase();
-
-        if (disposition.indexOf('attachment') !== -1 || contentType.indexOf('application/vnd.openxmlformats-officedocument.wordprocessingml.document') !== -1) {
-          var filename = 'formatted_resume.docx';
-          var match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
-          if (match) {
-            filename = decodeURIComponent(match[1] || match[2] || filename);
-          }
-          return response.blob().then(function(blob) {
-            var url = window.URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            window.URL.revokeObjectURL(url);
-            hideOverlay();
-          });
+    // File selection feedback
+    input.addEventListener('change', function () {
+        if (input.files && input.files.length > 0) {
+            var count = input.files.length;
+            chosenName.textContent = count === 1
+                ? input.files[0].name
+                : count + ' files selected';
+            chosen.classList.add('visible');
         }
-
-        return response.text().then(function(html) {
-          document.open();
-          document.write(html);
-          document.close();
-        });
-      }).catch(function() {
-        hideOverlay();
-        alert('Network error while generating the resume. Please try again.');
-      });
     });
-  })();
+
+    // Remove file
+    removeBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        input.value = '';
+        chosen.classList.remove('visible');
+        chosenName.textContent = '';
+    });
+
+    // Drag-over highlight
+    ['dragenter','dragover'].forEach(function(evt) {
+        zone.addEventListener(evt, function(e) { e.preventDefault(); zone.classList.add('drag-over'); });
+    });
+    ['dragleave','drop'].forEach(function(evt) {
+        zone.addEventListener(evt, function(e) { e.preventDefault(); zone.classList.remove('drag-over'); });
+    });
+    zone.addEventListener('drop', function(e) {
+        var files = e.dataTransfer && e.dataTransfer.files;
+        if (files && files.length > 0) {
+            input.files = files;
+            chosenName.textContent = files[0].name;
+            chosen.classList.add('visible');
+        }
+    });
+
+    // Form submit
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        btn.disabled = true;
+        btn.innerHTML = '<svg class="btn-icon" viewBox="0 0 24 24" style="fill:#fff"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg> Generating…';
+        overlay.style.display = 'flex';
+
+        var formData = new FormData(form);
+        fetch('/', { method: 'POST', body: formData })
+            .then(function (response) {
+                var disposition  = response.headers.get('Content-Disposition') || '';
+                var contentType  = (response.headers.get('Content-Type') || '').toLowerCase();
+        var isPptx = disposition.indexOf('attachment') !== -1
+                  || contentType.indexOf('presentationml') !== -1
+                  || contentType.indexOf('zip') !== -1;
+
+                if (isPptx) {
+                    var filename = input.files.length > 1 ? 'formatted_resumes.zip' : 'formatted_resume.pptx';
+                    var match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+                    if (match) filename = decodeURIComponent(match[1] || match[2] || filename);
+                    return response.blob().then(function (blob) {
+                        var url = window.URL.createObjectURL(blob);
+                        var a   = document.createElement('a');
+                        a.href = url; a.download = filename;
+                        document.body.appendChild(a); a.click(); a.remove();
+                        window.URL.revokeObjectURL(url);
+                        overlay.style.display = 'none';
+                        btn.disabled = false;
+                        btn.innerHTML = '<svg class="btn-icon" viewBox="0 0 24 24" style="fill:#fff"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> Generate PowerPoint Resume';
+                    });
+                }
+                return response.text().then(function (html) {
+                    document.open(); document.write(html); document.close();
+                });
+            })
+            .catch(function () {
+                overlay.style.display = 'none';
+                btn.disabled = false;
+                btn.innerHTML = '<svg class="btn-icon" viewBox="0 0 24 24" style="fill:#fff"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> Generate PowerPoint Resume';
+                alert('Network error. Please try again.');
+            });
+    });
+})();
 </script>
 </body>
 </html>
 '''
+
 
 # Helper Functions for DOCX Formatting
 def set_cell_background_white(cell):
@@ -354,7 +533,7 @@ class OpenAIResumeExtractor:
             "phone": "Phone number if found, otherwise empty string", 
             "date": "Application date if found, otherwise current date in DD-MMM-YYYY format",
             "subject": "Subject line in the exact format 'Application for the Position of {{ROLE}}' (no leading 'Subject:' label)",
-            "summary": "Professional summary/objective from Key Expertise section and first paragraph (4-5 lines)",
+            "summary": "Professional summary/objective from Key Expertise section and first paragraph (4-5 lines) (Total around 500 characters max)",
             "education": [
                 {{"degree": "Degree name", "institution": "Institution name"}}
             ],
@@ -379,7 +558,7 @@ class OpenAIResumeExtractor:
         3. For "location": Extract city/location (e.g., "Bengaluru", "Bangalore")
         4. For "date": Extract application date if found, otherwise use current date
         5. For "subject": Return exactly "Application for the Position of {{ROLE}}" using the candidate's target role/title; do not include a leading "Subject:" label or extra punctuation
-        6. For "summary": Combine Key Expertise section and first paragraph of cover letter
+        6. For "summary": Combine Key Expertise section and first paragraph of cover letter (total 500 characters max) to create a concise professional summary
         7. For "education": Extract degree and institution in table format
         8. For "experience_table": Format each entry to match the table structure with "Company Name as Role (Duration)" in company_name field
         9. For "roles_responsibility" field: Extract each responsibility EXACTLY as written by the candidate from the Roles & Responsibility column
@@ -497,74 +676,195 @@ class OpenAIResumeExtractor:
         return data
 
     def extract_with_rules(self, resume_text):
-        """Enhanced rule-based extraction as fallback"""
+        """Section-aware rule-based extraction"""
         lines = [line.strip() for line in resume_text.split('\n') if line.strip()]
-        
+
         info = {
             'name': 'Professional Candidate',
-            'location': 'Bengaluru',
+            'location': '',
             'email': '',
             'phone': '',
             'date': datetime.now().strftime("%d-%b-%Y"),
             'subject': 'Application for Technical Position',
             'summary': '',
-            'education': [('BCA', 'University Name')],
+            'education': [],
+            'experience_table': [],
             'experience': [],
             'skills': [],
             'certifications': []
         }
-        
-        # Extract name (first meaningful line)
-        for line in lines[:20]:
-            if (len(line.split()) <= 4 and len(line) > 2 and 
-                not any(char.isdigit() for char in line[:15]) and 
-                '@' not in line and 
-                not any(keyword in line.lower() for keyword in ['over', 'years', 'experience', 'seeking'])):
+
+        # --- Name: first clean line with no digits/@ ---
+        for line in lines[:5]:
+            if (2 < len(line.split()) <= 5 and
+                not any(c.isdigit() for c in line[:15]) and
+                '@' not in line and '|' not in line):
                 info['name'] = line
                 break
-        
-        # Extract contact info
-        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', resume_text)
+
+        # --- Contact ---
+        email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', resume_text)
         if email_match:
             info['email'] = email_match.group()
-        
-        phone_match = re.search(r'[+]?[\d\s\-\(\)]{10,15}', resume_text)
+
+        phone_match = re.search(r'\+?\d[\d\s\-\(\)]{9,14}', resume_text)
         if phone_match:
             info['phone'] = phone_match.group().strip()
-        
-        # Extract location
-        location_keywords = ['bengaluru', 'bangalore', 'mumbai', 'delhi', 'chennai', 'hyderabad', 'pune']
-        for line in lines:
-            if any(city in line.lower() for city in location_keywords) and len(line) < 50:
-                info['location'] = line.title()
+
+        location_cities = ['bengaluru', 'bangalore', 'mumbai', 'delhi', 'chennai',
+                           'hyderabad', 'pune', 'india', 'jaipur', 'noida', 'kolkata']
+        for line in lines[:10]:
+            if any(c in line.lower() for c in location_cities) and len(line) < 120:
+                info['location'] = line.split('|')[0].strip()
                 break
-        
-        # Extract summary (first substantial paragraph)
-        for line in lines:
-            if (len(line) > 100 and ('years' in line.lower() or 'experience' in line.lower())):
-                info['summary'] = line[:300] + '...' if len(line) > 300 else line
-                break
-        
-        # Extract skills
-        skill_keywords = ['AWS', 'Azure', 'Linux', 'Windows', 'Docker', 'Kubernetes', 'Python', 'Java', 
-                         'Terraform', 'Ansible', 'Jenkins', 'Git', 'SQL', 'Oracle', 'MySQL', 'MongoDB',
-                         'Windchill', 'PLM', 'Cisco', 'RHEL', 'CentOS', 'Ubuntu']
-        skills_found = set()
-        
-        for line in lines:
-            for skill in skill_keywords:
-                if skill.lower() in line.lower():
-                    skills_found.add(skill)
-        
-        info['skills'] = list(skills_found)[:12]
-        
-        # Extract certifications
-        for line in lines:
-            if ('certified' in line.lower() or 'certification' in line.lower()) and len(line.strip()) > 10:
-                cleaned_cert = line.strip().replace('•', '').replace('-', '').strip()
-                if cleaned_cert:
-                    info['certifications'].append(cleaned_cert)
-        
+
+        # --- Section splitting ---
+        SECTION_HEADERS = {
+            'summary':        ['PROFESSIONAL SUMMARY', 'SUMMARY', 'OBJECTIVE', 'PROFILE'],
+            'experience':     ['WORK EXPERIENCE', 'EXPERIENCE', 'EMPLOYMENT HISTORY'],
+            'education':      ['EDUCATION', 'ACADEMIC BACKGROUND'],
+            'skills':         ['SKILLS', 'TECHNICAL SKILLS', 'KEY SKILLS', 'CORE COMPETENCIES'],
+            'certifications': ['CERTIFICATIONS & ACHIEVEMENTS', 'CERTIFICATIONS', 'ACHIEVEMENTS', 'CERTIFICATION'],
+            'projects':       ['PROJECTS', 'PERSONAL PROJECTS'],
+        }
+
+        # Build ordered list of (section_name, char_position)
+        upper_text = resume_text.upper()
+        found = []
+        for sec, markers in SECTION_HEADERS.items():
+            for m in markers:
+                for pat in (f'\n{m}\n', f'\n{m} \n', f'\n\n{m}'):
+                    pos = upper_text.find(pat)
+                    if pos != -1:
+                        found.append((sec, pos))
+                        break
+        found.sort(key=lambda x: x[1])
+        # Deduplicate section names keeping first occurrence
+        seen = set()
+        ordered = []
+        for sec, pos in found:
+            if sec not in seen:
+                seen.add(sec)
+                ordered.append((sec, pos))
+
+        def get_section(name):
+            names = [s for s, _ in ordered]
+            poses = [p for _, p in ordered]
+            if name not in names:
+                return ''
+            i = names.index(name)
+            start = poses[i]
+            end = poses[i + 1] if i + 1 < len(poses) else len(resume_text)
+            return resume_text[start:end]
+
+        # --- Summary ---
+        sec = get_section('summary')
+        if sec:
+            body = [l.strip() for l in sec.split('\n')
+                    if l.strip() and not any(h in l.upper() for h in SECTION_HEADERS['summary'])]
+            info['summary'] = ' '.join(body)[:700]
+        if not info['summary']:
+            for line in lines:
+                if len(line) > 120:
+                    info['summary'] = line[:500]
+                    break
+
+        # --- Education ---
+        sec = get_section('education')
+        degree_kw   = ['b.tech', 'btech', 'b.e', 'mtech', 'm.tech', 'bca', 'mca', 'mba',
+                        'bsc', 'msc', 'bachelor', 'master', 'phd', 'computer science', 'engineering']
+        inst_kw     = ['university', 'college', 'institute', 'school',
+                        'manipal', 'iit', 'nit', 'bits', 'amity', 'vit']
+        if sec:
+            edu_lines = [l.strip() for l in sec.split('\n')
+                         if l.strip() and not any(h in l.upper() for h in SECTION_HEADERS['education'])]
+            deg, ins = '', ''
+            for line in edu_lines[:20]:
+                ll = line.lower()
+                if any(k in ll for k in degree_kw) and not deg:
+                    deg = line
+                elif any(k in ll for k in inst_kw) and not ins:
+                    ins = line
+                if deg or ins:
+                    if deg and ins:
+                        info['education'].append((deg, ins))
+                        deg, ins = '', ''
+            if deg:
+                info['education'].append((deg, ins))
+        if not info['education']:
+            info['education'] = [('Degree', 'University')]
+
+        # --- Certifications ---
+        sec = get_section('certifications')
+        if sec:
+            junk = set(h.upper() for hs in SECTION_HEADERS.values() for h in hs)
+            for line in sec.split('\n'):
+                cleaned = line.strip().lstrip('●•-– ').strip()
+                upper_c = cleaned.upper()
+                if (len(cleaned) > 8 and
+                    upper_c not in junk and
+                    upper_c != cleaned):   # skip ALL-CAPS header lines
+                    info['certifications'].append(cleaned)
+
+        # --- Skills ---
+        sec = get_section('skills')
+        if sec:
+            collected = []
+            for line in sec.split('\n'):
+                line = line.strip()
+                if not line or any(h in line.upper() for h in SECTION_HEADERS['skills']):
+                    continue
+                body = line.split(':', 1)[1] if ':' in line else line
+                for tok in re.split(r'[,;]', body):
+                    tok = tok.strip().lstrip('●•-– ').strip()
+                    if 1 < len(tok) < 60:
+                        collected.append(tok)
+            info['skills'] = collected[:20]
+        if not info['skills']:
+            fallback_kw = ['Python', 'Java', 'SQL', 'AWS', 'Azure', 'Docker',
+                           'Kubernetes', 'Git', 'MongoDB', 'React', 'FastAPI']
+            found_skills = {k for k in fallback_kw if k.lower() in resume_text.lower()}
+            info['skills'] = list(found_skills)[:12]
+
+        # --- Work Experience ---
+        sec = get_section('experience')
+        if sec:
+            role_kw = ['Engineer', 'Developer', 'Intern', 'Analyst', 'Architect',
+                        'Manager', 'Lead', 'Consultant', 'Specialist', 'Designer']
+            company_kw = ['Inc', 'Ltd', 'Pvt', 'Technologies', 'Accenture',
+                           'Corp', 'Solutions', 'Services', 'Systems', 'Company']
+            all_kw = role_kw + company_kw
+
+            current_company = ''
+            current_bullets: list = []
+
+            for line in sec.split('\n'):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                is_header = any(h in stripped.upper() for h in SECTION_HEADERS['experience'])
+                is_bullet = stripped[0] in ('●', '•', '-') if stripped else False
+                is_company = (not is_bullet and not is_header and
+                               5 < len(stripped) < 120 and
+                               any(k in stripped for k in all_kw))
+
+                if is_company:
+                    if current_company and current_bullets:
+                        info['experience_table'].append({
+                            'company_name': current_company,
+                            'roles_responsibility': current_bullets[:]
+                        })
+                    current_company = stripped
+                    current_bullets = []
+                elif is_bullet:
+                    current_bullets.append(stripped.lstrip('●•-– ').strip())
+
+            if current_company and current_bullets:
+                info['experience_table'].append({
+                    'company_name': current_company,
+                    'roles_responsibility': current_bullets[:]
+                })
+
         return info
 
 # Professional Resume Formatter Class
@@ -1063,6 +1363,251 @@ class ProfessionalResumeFormatter:
         buffer.seek(0)
         return buffer
 
+# Professional PPTX Formatter Class
+class ProfessionalPPTXFormatter:
+    def __init__(self, logo_path=None):
+        self.prs = Presentation()
+        # Blank slide layout is index 6 usually
+        self.slide_layout = self.prs.slide_layouts[6]
+        self.slide = self.prs.slides.add_slide(self.slide_layout)
+        # Using 13.33x7.5 for widescreen
+        self.prs.slide_width = PptxInches(13.33)
+        self.prs.slide_height = PptxInches(7.5)
+        self.logo_path = logo_path
+        self.green_color = PptxRGBColor(50, 150, 50) # Soft green
+        self.blue_color = PptxRGBColor(100, 150, 200) # Soft blue
+        
+    def add_header(self, name, role, domain):
+        txBox = self.slide.shapes.add_textbox(PptxInches(0.4), PptxInches(0.3), PptxInches(12.5), PptxInches(0.6))
+        tf = txBox.text_frame
+        p = tf.paragraphs[0]
+        if domain:
+            text = f"{name} - {role[:50]} (specialized in {domain[:30]})"
+        else:
+            text = f"{name} - {role[:50]}"
+        p.text = text
+        p.font.size = PptxPt(24)
+        p.font.bold = True
+        p.font.color.rgb = PptxRGBColor(0,0,0)
+        
+    def add_left_column(self, candidate_info):
+        left_margin = PptxInches(0.4)
+        box_width = PptxInches(4.2)
+        
+        # 1. Contact Box
+        shape_contact = self.slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, left_margin, PptxInches(1.2), box_width, PptxInches(1.5)
+        )
+        shape_contact.fill.background()
+        shape_contact.line.color.rgb = self.blue_color
+        shape_contact.line.width = PptxPt(1.5)
+        
+        tf = shape_contact.text_frame
+        tf.word_wrap = True
+        tf.vertical_anchor = MSO_ANCHOR.TOP
+        # Small top margin so text doesn't touch the border
+        tf.margin_top = PptxPt(8)
+        tf.margin_left = PptxPt(8)
+        tf.margin_bottom = PptxPt(4)
+        
+        info_lines = [
+            f"Name: {candidate_info.get('name', '')}",
+            f"Role: {candidate_info.get('subject', '').replace('Application for the Position of', '').strip()[:50]}",
+            f"Email: {candidate_info.get('email', '')}"
+        ]
+        if candidate_info.get('phone'):
+             info_lines.append(f"Phone: {candidate_info.get('phone', '')}")
+             
+        is_first = True
+        for line in info_lines:
+            if line.replace('Phone: ', '').replace('Email: ', '').replace('Role: ', '').strip():
+                 if is_first:
+                     p = tf.paragraphs[0]
+                     is_first = False
+                 else:
+                     p = tf.add_paragraph()
+                 p.text = line
+                 p.font.size = PptxPt(11)
+                 p.font.color.rgb = PptxRGBColor(0,0,0)
+        
+        # 2. Professional Summary
+        shape_summary = self.slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, left_margin, PptxInches(2.9), box_width, PptxInches(2.4)
+        )
+        shape_summary.fill.background()
+        shape_summary.line.color.rgb = self.green_color
+        shape_summary.line.width = PptxPt(1.5)
+        
+        txBox_title1 = self.slide.shapes.add_textbox(left_margin, PptxInches(2.9), box_width, PptxInches(0.4))
+        p_t1 = txBox_title1.text_frame.paragraphs[0]
+        p_t1.text = "Professional Summary"
+        p_t1.font.bold = True
+        p_t1.font.size = PptxPt(12)
+        p_t1.alignment = PP_ALIGN.CENTER
+        
+        txBox_body1 = self.slide.shapes.add_textbox(left_margin+PptxInches(0.1), PptxInches(3.3), box_width-PptxInches(0.2), PptxInches(1.9))
+        txBox_body1.text_frame.word_wrap = True
+        p_b1 = txBox_body1.text_frame.paragraphs[0]
+        p_b1.text = candidate_info.get('summary', '')
+        p_b1.font.size = PptxPt(10)
+        p_b1.font.color.rgb = PptxRGBColor(0,0,0)
+        
+        # 3. Education / Certification
+        txBox_edu = self.slide.shapes.add_textbox(left_margin, PptxInches(5.4), box_width, PptxInches(0.4))
+        p_t2 = txBox_edu.text_frame.paragraphs[0]
+        p_t2.text = "Education / Certification"
+        p_t2.font.bold = True
+        p_t2.font.size = PptxPt(12)
+        p_t2.alignment = PP_ALIGN.CENTER
+        
+        txBox_body2 = self.slide.shapes.add_textbox(left_margin, PptxInches(5.8), box_width, PptxInches(1.5))
+        txBox_body2.text_frame.word_wrap = True
+        
+        is_first = True
+        edu_list = candidate_info.get('education', [])
+        for edu in edu_list[:2]:
+            if is_first:
+                p_e = txBox_body2.text_frame.paragraphs[0]
+                is_first = False
+            else:
+                p_e = txBox_body2.text_frame.add_paragraph()
+            p_e.text = f"• {edu[0]} - {edu[1]}"
+            p_e.font.size = PptxPt(10)
+            
+        cert_list = candidate_info.get('certifications', [])
+        for cert in cert_list[:3]:
+            if is_first:
+                p_c = txBox_body2.text_frame.paragraphs[0]
+                is_first = False
+            else:
+                p_c = txBox_body2.text_frame.add_paragraph()
+            p_c.text = f"• {cert}"
+            p_c.font.size = PptxPt(10)
+
+    def add_right_column(self, candidate_info):
+        right_margin = PptxInches(4.8)
+        box_width = PptxInches(8.1)
+        
+        # 1. Core Skills Table
+        txBox_skills = self.slide.shapes.add_textbox(right_margin, PptxInches(1.15), box_width, PptxInches(0.35))
+        p_sk = txBox_skills.text_frame.paragraphs[0]
+        p_sk.text = "Core Skills"
+        p_sk.font.bold = True
+        p_sk.font.size = PptxPt(12)
+        p_sk.alignment = PP_ALIGN.CENTER
+        
+        table_shape = self.slide.shapes.add_table(4, 2, right_margin, PptxInches(1.5), box_width, PptxInches(1.5))
+        table = table_shape.table
+        table.columns[0].width = PptxInches(2.5)
+        table.columns[1].width = PptxInches(5.6)
+        
+        # Distribute skills across 4 rows
+        all_skills = candidate_info.get('skills', [])
+        n = len(all_skills)
+        # Split into 4 roughly equal quarters
+        q = max(1, n // 4)
+        tech_skills       = ", ".join(all_skills[:q])
+        frameworks        = ", ".join(all_skills[q:q*2])
+        tools             = ", ".join(all_skills[q*2:q*3])
+        domain_exp        = ", ".join(all_skills[q*3:])
+
+        rows_data = [
+            ("Technical Skills",      tech_skills),
+            ("Frameworks/Libraries",  frameworks),
+            ("Tools",                 tools),
+            ("Domain Experience",     domain_exp),
+        ]
+        
+        for i, (cat, val) in enumerate(rows_data):
+            cell_left = table.cell(i, 0)
+            cell_left.text = cat
+            cell_left.text_frame.paragraphs[0].font.bold = True
+            cell_left.text_frame.paragraphs[0].font.size = PptxPt(10)
+            cell_left.text_frame.word_wrap = True
+
+            cell_right = table.cell(i, 1)
+            cell_right.text = val
+            cell_right.text_frame.paragraphs[0].font.size = PptxPt(9)
+            cell_right.text_frame.word_wrap = True
+
+        # Fixed y for Responsibilities — always below the table
+        resp_label_y = PptxInches(3.3)
+        resp_box_y   = PptxInches(3.65)
+
+        # 2. Responsibilities label + rounded rectangle
+        txBox_resp = self.slide.shapes.add_textbox(right_margin, resp_label_y, box_width, PptxInches(0.35))
+        p_r = txBox_resp.text_frame.paragraphs[0]
+        p_r.text = "Responsibilities :"
+        p_r.font.bold = True
+        p_r.font.size = PptxPt(12)
+
+        shape_resp = self.slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE, right_margin, resp_box_y, box_width, PptxInches(3.5)
+        )
+        shape_resp.fill.background()
+        shape_resp.line.color.rgb = self.green_color
+        shape_resp.line.width = PptxPt(1.5)
+
+        # Use a separate textbox OVER the shape so text stays inside the box bounds
+        resp_inner = self.slide.shapes.add_textbox(
+            right_margin + PptxInches(0.12),
+            resp_box_y + PptxInches(0.1),
+            box_width - PptxInches(0.24),
+            PptxInches(3.3)
+        )
+        tf_r = resp_inner.text_frame
+        tf_r.word_wrap = True
+
+        exp_list = candidate_info.get('experience_table', [])
+        if not exp_list and candidate_info.get('experience'):
+            exp_list = candidate_info.get('experience')
+
+        is_first = True
+
+        for exp in exp_list:
+            resp = exp.get('roles_responsibility') or exp.get('responsibilities')
+            items = resp if isinstance(resp, list) else [l.strip() for l in (resp or '').split('\n') if l.strip()]
+            for r in items:
+                _r_clean = r.lstrip('•– ').strip()
+                text = f"• {_r_clean}"
+                if is_first:
+                    p = tf_r.paragraphs[0]
+                    is_first = False
+                else:
+                    p = tf_r.add_paragraph()
+                p.text = text
+                p.font.size = PptxPt(10)
+                p.font.color.rgb = PptxRGBColor(0, 0, 0)
+                # small space between bullets
+                p.space_after = PptxPt(2)
+
+    def create_complete_resume(self, candidate_info):
+        role = candidate_info.get('subject', '').replace('Application for the Position of', '').strip()
+        skills = candidate_info.get('skills', [])
+
+        # Extract a meaningful domain from role — strip generic job title words
+        generic_words = {'Developer', 'Engineer', 'Manager', 'Analyst', 'Lead',
+                         'Senior', 'Junior', 'Associate', 'Consultant', 'Specialist',
+                         'Architect', 'Designer', 'Administrator', 'Officer', 'Executive'}
+        domain_words = [w for w in role.split() if w not in generic_words]
+        if domain_words:
+            domain = ' '.join(domain_words[:3])  # e.g. "ServiceNow" or "AI/ML"
+        elif skills:
+            domain = ', '.join(skills[:2])
+        else:
+            domain = 'Technology'
+
+        self.add_header(candidate_info.get('name', 'Name'), role, domain)
+        self.add_left_column(candidate_info)
+        self.add_right_column(candidate_info)
+        return self.save_to_buffer()
+
+    def save_to_buffer(self):
+        buffer = io.BytesIO()
+        self.prs.save(buffer)
+        buffer.seek(0)
+        return buffer
+
 # Text Extraction Classes
 class ResumeTextExtractor:
     def extract_from_pdf(self, file_content):
@@ -1121,119 +1666,79 @@ def extract_text_from_file(file):
 @app.route('/', methods=['GET', 'POST'])
 def upload_and_format():
     if request.method == 'POST':
-        # Validate resume file
-        if 'resume_file' not in request.files or request.files['resume_file'].filename == '':
-            flash('Please select a resume file')
+        resume_files = request.files.getlist('resume_file')
+        resume_files = [f for f in resume_files if f.filename != '']
+        if not resume_files:
+            flash('Please select at least one resume file')
             return render_template_string(UPLOAD_FORM)
-        
-        resume_file = request.files['resume_file']
-        
-        # Handle optional logo - use default if none provided
-        logo_path = "logo_path.png"  # Default logo path
-        if 'logo_file' in request.files and request.files['logo_file'].filename != '':
-            logo_file = request.files['logo_file']
-            logo_path = "temp_logo.png"
-            logo_file.save(logo_path)
-        
-        try:
-            # Extract text from resume
+
+        logo_path = None
+
+        def process_single(resume_file):
+            """Process one resume file and return (buffer, safe_filename) or raise."""
             resume_text = extract_text_from_file(resume_file)
-            
-            # Print the raw extracted text from the uploaded document
             print("\n" + "="*80)
-            print("RAW EXTRACTED RESUME TEXT")
+            print(f"RAW EXTRACTED TEXT: {resume_file.filename}")
             print("="*80)
-            print(resume_text)
+            print(resume_text[:1000])
             print("="*80 + "\n")
-            
+
             if resume_text.startswith(('PDF Error', 'DOCX Error', 'TXT Error', 'Unsupported')):
-                flash(f'Error processing file: {resume_text}')
-                return render_template_string(UPLOAD_FORM)
-            
+                raise ValueError(f'Error processing {resume_file.filename}: {resume_text}')
             if len(resume_text.strip()) < 50:
-                flash('Resume appears to be empty or too short')
-                return render_template_string(UPLOAD_FORM)
-            
-            # OpenAI extraction (set OPENAI_API_KEY environment variable)
+                raise ValueError(f'{resume_file.filename} appears to be empty or too short')
+
             api_key = os.getenv('OPENAI_API_KEY')
             extractor = OpenAIResumeExtractor(api_key)
             candidate_info = extractor.extract_with_openai(resume_text)
-            
-            # Debug: Print extracted data
-            print("\n" + "="*80)
-            print("LLM EXTRACTION RESULTS")
-            print("="*80)
-            print(f"Name: {candidate_info.get('name', 'NOT FOUND')}")
-            print(f"Location: {candidate_info.get('location', 'NOT FOUND')}")
-            print(f"Date: {candidate_info.get('date', 'NOT FOUND')}")
-            print(f"Subject: {candidate_info.get('subject', 'NOT FOUND')}")
-            print(f"Email: {candidate_info.get('email', 'NOT FOUND')}")
-            print(f"Phone: {candidate_info.get('phone', 'NOT FOUND')}")
-            print(f"Summary: {candidate_info.get('summary', 'NOT FOUND')[:200]}...")
-            print(f"Education: {candidate_info.get('education', 'NOT FOUND')}")
-            print(f"Skills: {candidate_info.get('skills', 'NOT FOUND')}")
-            print(f"Certifications: {candidate_info.get('certifications', 'NOT FOUND')}")
-            print(f"Cover Letter: {candidate_info.get('cover_letter', 'NOT FOUND')[:200]}...")
-            
-            print("\n" + "-"*80)
-            print("EXPERIENCE TABLE DETAILS")
-            print("-"*80)
-            if candidate_info.get('experience_table'):
-                for i, exp in enumerate(candidate_info['experience_table'], 1):
-                    print(f"\nExperience {i}:")
-                    print(f"  Company Name: {exp.get('company_name', 'NOT FOUND')}")
-                    print(f"  Roles & Responsibility: {exp.get('roles_responsibility', 'NOT FOUND')}")
-            else:
-                print("No experience_table found!")
-                
-            print("\n" + "-"*80)
-            print("FALLBACK EXPERIENCE (OLD FORMAT)")
-            print("-"*80)
-            if candidate_info.get('experience'):
-                for i, exp in enumerate(candidate_info['experience'], 1):
-                    print(f"\nExperience {i}:")
-                    print(f"  Company: {exp.get('company', 'NOT FOUND')}")
-                    print(f"  Role: {exp.get('role', 'NOT FOUND')}")
-                    print(f"  Duration: {exp.get('duration', 'NOT FOUND')}")
-                    print(f"  Responsibilities: {exp.get('responsibilities', 'NOT FOUND')}")
-            else:
-                print("No experience (old format) found!")
-                
-            print("\n" + "="*80)
-            print("COMPLETE JSON RESPONSE")
-            print("="*80)
-            import json
-            print(json.dumps(candidate_info, indent=2, ensure_ascii=False))
-            print("="*80 + "\n")
-            
-            # Generate professional resume
-            formatter = ProfessionalResumeFormatter(logo_path)
+
+            formatter = ProfessionalPPTXFormatter(logo_path)
             buffer = formatter.create_complete_resume(candidate_info)
-            
-            # Cleanup temporary logo (only if it's a temp file)
-            if logo_path == "temp_logo.png" and os.path.exists(logo_path):
-                os.remove(logo_path)
-            
-            # Return formatted resume
+
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            safe_name = re.sub(r'[^\w\s-]', '', candidate_info['name']).strip().replace(' ', '_')
-            filename = f"{safe_name}_{timestamp}.docx"
-            
-            return send_file(
-                buffer,
-                as_attachment=True,
-                download_name=filename,
-                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            )
+            safe_name = re.sub(r'[^\w\s-]', '', candidate_info.get('name', 'resume')).strip().replace(' ', '_')
+            filename = f"{safe_name}_{timestamp}.pptx"
+            return buffer, filename
+
+        try:
+            if len(resume_files) == 1:
+                # Single file — return PPTX directly
+                buffer, filename = process_single(resume_files[0])
+                return send_file(
+                    buffer,
+                    as_attachment=True,
+                    download_name=filename,
+                    mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                )
+            else:
+                # Multiple files — bundle into a ZIP
+                zip_buffer = io.BytesIO()
+                errors = []
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for resume_file in resume_files:
+                        try:
+                            pptx_buffer, pptx_name = process_single(resume_file)
+                            zf.writestr(pptx_name, pptx_buffer.read())
+                        except Exception as file_err:
+                            errors.append(str(file_err))
+                zip_buffer.seek(0)
+                if errors:
+                    print("Batch errors:", errors)
+                zip_name = f"formatted_resumes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+                return send_file(
+                    zip_buffer,
+                    as_attachment=True,
+                    download_name=zip_name,
+                    mimetype='application/zip'
+                )
             
         except Exception as e:
-            # Cleanup on error (only temp logo)
-            if 'logo_path' in locals() and logo_path == "temp_logo.png" and os.path.exists(logo_path):
-                os.remove(logo_path)
             flash(f'Processing error: {str(e)}')
             return render_template_string(UPLOAD_FORM)
+
     
     return render_template_string(UPLOAD_FORM)
+
 
 if __name__ == '__main__':
     import socket
@@ -1279,4 +1784,6 @@ if __name__ == '__main__':
     else:
         print("pyngrok not installed; you can run 'ngrok http {port}' separately to expose the app.")
     
-    app.run(debug=True, host='0.0.0.0', port=port, use_reloader=False)
+    port = int(os.environ.get('PORT', port))
+    debug = os.environ.get('FLASK_ENV') != 'production'
+    app.run(debug=debug, host='0.0.0.0', port=port, use_reloader=False)
