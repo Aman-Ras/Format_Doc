@@ -1,11 +1,14 @@
-from flask import Flask, request, render_template_string, send_file, flash
+from flask import Flask, request, render_template_string, send_file, flash, jsonify
 from dotenv import load_dotenv
 import io
 import os
 import re
 import json
+import uuid
 import zipfile
+import threading
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
@@ -28,6 +31,10 @@ api_key = os.getenv('OPENAI_API_KEY')
 
 app = Flask(__name__)
 app.secret_key = 'groq_resume_formatter_2025'
+
+# In-memory job store: job_id -> {total, done, errors, zip_buffer, zip_name, lock}
+jobs = {}
+jobs_lock = threading.Lock()
 
 # Network configuration for local network access
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -533,7 +540,7 @@ class OpenAIResumeExtractor:
             "phone": "Phone number if found, otherwise empty string", 
             "date": "Application date if found, otherwise current date in DD-MMM-YYYY format",
             "subject": "Subject line in the exact format 'Application for the Position of {{ROLE}}' (no leading 'Subject:' label)",
-            "summary": "Professional summary/objective from Key Expertise section and first paragraph (4-5 lines) (Total around 500 characters max)",
+            "summary": "Professional summary/objective from Key Expertise section and first paragraph. Write a COMPLETE summary that ends naturally at a full sentence — do NOT truncate or add '...'. Keep the total within 500 characters.",
             "education": [
                 {{"degree": "Degree name", "institution": "Institution name"}}
             ],
@@ -558,7 +565,7 @@ class OpenAIResumeExtractor:
         3. For "location": Extract city/location (e.g., "Bengaluru", "Bangalore")
         4. For "date": Extract application date if found, otherwise use current date
         5. For "subject": Return exactly "Application for the Position of {{ROLE}}" using the candidate's target role/title; do not include a leading "Subject:" label or extra punctuation
-        6. For "summary": Combine Key Expertise section and first paragraph of cover letter (total 500 characters max) to create a concise professional summary
+        6. For "summary": Combine Key Expertise section and first paragraph of cover letter into a concise professional summary within 500 characters. The summary MUST end at a complete sentence — never cut mid-word or add '...'
         7. For "education": Extract degree and institution in table format
         8. For "experience_table": Format each entry to match the table structure with "Company Name as Role (Duration)" in company_name field
         9. For "roles_responsibility" field: Extract each responsibility EXACTLY as written by the candidate from the Roles & Responsibility column
@@ -1662,6 +1669,70 @@ def extract_text_from_file(file):
     else:
         return "Unsupported file format"
 
+PROGRESS_PAGE = '''
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Processing Resumes...</title>
+    <meta charset="utf-8">
+    <style>
+        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
+        .card { background: #fff; border-radius: 12px; padding: 40px 50px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; width: 420px; }
+        h2 { margin-bottom: 8px; color: #1e3a6e; }
+        .sub { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .bar-wrap { background: #e0e0e0; border-radius: 20px; height: 18px; overflow: hidden; margin-bottom: 14px; }
+        .bar { height: 100%; background: linear-gradient(90deg, #1e3a6e, #3278c8); border-radius: 20px; transition: width 0.4s ease; width: 0%; }
+        .count { font-size: 15px; color: #333; margin-bottom: 6px; }
+        .errors { margin-top: 16px; text-align: left; font-size: 13px; color: #c0392b; }
+        .done-btn { display: none; margin-top: 24px; background: #1e3a6e; color: #fff; border: none; border-radius: 8px; padding: 12px 32px; font-size: 16px; cursor: pointer; text-decoration: none; }
+        .done-btn:hover { background: #3278c8; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h2>Processing Resumes</h2>
+    <p class="sub">Each resume is processed independently via a separate API call.</p>
+    <div class="bar-wrap"><div class="bar" id="bar"></div></div>
+    <div class="count" id="count">0 / {{ total }} done</div>
+    <div class="errors" id="errors"></div>
+    <a class="done-btn" id="dlBtn" href="/download/{{ job_id }}">Download ZIP</a>
+</div>
+<script>
+    const jobId = "{{ job_id }}";
+    const total = {{ total }};
+    function poll() {
+        fetch('/status/' + jobId)
+            .then(r => r.json())
+            .then(data => {
+                const pct = total > 0 ? (data.done / total * 100) : 0;
+                document.getElementById('bar').style.width = pct + '%';
+                document.getElementById('count').textContent = data.done + ' / ' + total + ' done';
+                if (data.errors && data.errors.length) {
+                    const errDiv = document.getElementById('errors');
+                    errDiv.textContent = '';
+                    const label = document.createElement('b');
+                    label.textContent = 'Errors:';
+                    errDiv.appendChild(label);
+                    data.errors.forEach(function(e) {
+                        const d = document.createElement('div');
+                        d.textContent = e;
+                        errDiv.appendChild(d);
+                    });
+                }
+                if (data.finished) {
+                    document.getElementById('dlBtn').style.display = 'inline-block';
+                } else {
+                    setTimeout(poll, 1500);
+                }
+            })
+            .catch(() => setTimeout(poll, 2000));
+    }
+    poll();
+</script>
+</body>
+</html>
+'''
+
 # Main Flask Route
 @app.route('/', methods=['GET', 'POST'])
 def upload_and_format():
@@ -1711,33 +1782,104 @@ def upload_and_format():
                     mimetype='application/vnd.openxmlformats-officedocument.presentationml.presentation'
                 )
             else:
-                # Multiple files — bundle into a ZIP
-                zip_buffer = io.BytesIO()
-                errors = []
-                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for resume_file in resume_files:
-                        try:
-                            pptx_buffer, pptx_name = process_single(resume_file)
-                            zf.writestr(pptx_name, pptx_buffer.read())
-                        except Exception as file_err:
-                            errors.append(str(file_err))
-                zip_buffer.seek(0)
-                if errors:
-                    print("Batch errors:", errors)
-                zip_name = f"formatted_resumes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-                return send_file(
-                    zip_buffer,
-                    as_attachment=True,
-                    download_name=zip_name,
-                    mimetype='application/zip'
-                )
-            
+                # Multiple files — process in parallel threads, return job ID immediately
+                job_id = str(uuid.uuid4())
+                # Read file bytes now (can't pass Werkzeug file objects across threads)
+                file_items = [(f.filename, f.read()) for f in resume_files]
+                total = len(file_items)
+
+                with jobs_lock:
+                    jobs[job_id] = {
+                        'total': total,
+                        'done': 0,
+                        'errors': [],
+                        'zip_buffer': None,
+                        'zip_name': None,
+                        'lock': threading.Lock(),
+                        'finished': False,
+                    }
+
+                def run_bulk(job_id, file_items, logo_path):
+                    job = jobs[job_id]
+                    zip_buffer = io.BytesIO()
+                    zip_name = f"formatted_resumes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+
+                    def process_item(item):
+                        orig_name, file_bytes = item
+                        fake_file = io.BytesIO(file_bytes)
+                        fake_file.filename = orig_name
+                        return process_single(fake_file)
+
+                    results = {}
+                    with ThreadPoolExecutor(max_workers=4) as executor:
+                        future_to_name = {executor.submit(process_item, item): item[0] for item in file_items}
+                        for future in as_completed(future_to_name):
+                            orig_name = future_to_name[future]
+                            with job['lock']:
+                                try:
+                                    pptx_buffer, pptx_name = future.result()
+                                    results[pptx_name] = pptx_buffer.read()
+                                except Exception as err:
+                                    job['errors'].append(f"{orig_name}: {str(err)}")
+                                job['done'] += 1
+
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+                        for name, data in results.items():
+                            zf.writestr(name, data)
+                    zip_buffer.seek(0)
+
+                    with job['lock']:
+                        job['zip_buffer'] = zip_buffer
+                        job['zip_name'] = zip_name
+                        job['finished'] = True
+
+                threading.Thread(target=run_bulk, args=(job_id, file_items, logo_path), daemon=True).start()
+
+                return render_template_string(PROGRESS_PAGE, job_id=job_id, total=total)
+
         except Exception as e:
             flash(f'Processing error: {str(e)}')
             return render_template_string(UPLOAD_FORM)
 
-    
     return render_template_string(UPLOAD_FORM)
+
+
+@app.route('/status/<job_id>')
+def job_status(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    with job['lock']:
+        return jsonify({
+            'total': job['total'],
+            'done': job['done'],
+            'errors': job['errors'],
+            'finished': job['finished'],
+        })
+
+
+@app.route('/download/<job_id>')
+def job_download(job_id):
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job:
+        return 'Job not found', 404
+    with job['lock']:
+        if not job['finished']:
+            return 'Still processing', 202
+        zip_buffer = job['zip_buffer']
+        zip_name = job['zip_name']
+    # Clean up after download
+    with jobs_lock:
+        jobs.pop(job_id, None)
+    zip_buffer.seek(0)
+    return send_file(
+        zip_buffer,
+        as_attachment=True,
+        download_name=zip_name,
+        mimetype='application/zip'
+    )
 
 
 if __name__ == '__main__':
